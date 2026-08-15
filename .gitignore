@@ -1,0 +1,31 @@
+# Aiken
+/build/
+/artifacts/
+plutus.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Monitor data — never commit captured market data or a database
+/monitor/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Secrets
+.env
+.env.*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+[
+  {
+    "source": "example-ada-usd",
+    "address": "addr_test1wq_replace_me_with_a_real_script_address",
+    "decoder": "mydecoders:ada_usd",
+    "pyth_feed_id": 16
+  }
+]

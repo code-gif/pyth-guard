@@ -1,0 +1,35 @@
+name = "pyth-guard/pyth-guard"
+version = "0.1.0"
+compiler = "v1.1.21"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Freshness, confidence and replay guards for Pyth Pro price updates on Cardano"
+
+[repository]
+user = "pyth-guard"
+project = "pyth-guard"
+platform = "github"
+
+# Both dependencies are pinned exactly.
+#
+# aiken-lang/stdlib is pinned to v3.0.0 because pyth-lazer-cardano requires it.
+# Pinning a v2.x stdlib makes the compiler exit non-zero with no diagnostic at
+# all; see docs/INTEGRATION.md.
+#
+# pyth-lazer-cardano publishes no tags and its manifest version is permanently
+# "0.0.0", so a version string cannot identify a release. It is pinned to a
+# commit hash instead. Bumping this pin is a deliberate, reviewed change: the
+# upstream Feed type is decoded field-by-field by this library, and a field
+# added or reordered upstream changes what lib/pyth_guard.ak reads.
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"
+
+[[dependencies]]
+name = "pyth-network/pyth-lazer-cardano"
+version = "217b5917228b17f015719b27dd616a75ad6bd800"
+source = "github"
+
+[config]

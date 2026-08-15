@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  aiken:
+    name: aiken check + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aiken-lang/setup-aiken@v1
+        with:
+          version: v1.1.21
+
+      - name: Format check
+        run: aiken fmt --check
+
+      - name: Tests
+        run: aiken check
+
+      - name: Build
+        run: aiken build --trace-level silent
+
+      - name: Report validator sizes
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          bp = json.loads(pathlib.Path("plutus.json").read_text())
+          for v in bp["validators"]:
+              print(f'{v["title"]:40s} {len(v["compiledCode"]) // 2:>7d} bytes')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plutus-blueprint
+          path: plutus.json
+
+  monitor:
+    name: pythmon lint + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: monitor
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest -q
+
+      - name: End-to-end demo (no API key required)
+        run: python -m pythmon --db "$RUNNER_TEMP/ci.sqlite" demo --check
