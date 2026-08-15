@@ -20,12 +20,13 @@
 ////
 //// ## What is not covered here
 ////
-//// Nothing in this file constructs a `Transaction`. `try_read` is a two-line
-//// composition of `pyth.get_updates` and `select`, and `select` is tested
-//// directly; faking a Pyth state reference input and a withdrawal redeemer
-//// would test the upstream parser rather than this library. The
-//// transaction-level path is exercised on a live network instead — see
-//// ROADMAP.md.
+//// Nothing in this file constructs a `Transaction`; these tests drive `check`
+//// and `select` on hand-built `PriceUpdate` values, which is what makes the
+//// boundaries above cheap to state exactly.
+////
+//// The transaction-level path — `read` / `try_read`, the Pyth state reference
+//// input, the withdrawal redeemer and the upstream binary parser — is covered
+//// in `e2e_tests.ak`, against a real signed payload.
 
 use aiken/interval.{Finite, Interval, IntervalBound}
 use cardano/transaction.{ValidityRange}

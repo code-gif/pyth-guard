@@ -108,14 +108,21 @@ harder to use safely than one that does not.
 ## Build
 
 ```bash
-aiken check     # 59 tests
+aiken check     # 75 tests
 aiken build     # emits plutus.json
 aiken fmt       # CI runs --check
 ```
 
 Verified against Aiken v1.1.23, stdlib v3.0.0, Plutus V3: `fmt --check` clean,
-59/59 tests passing, and `build` producing `price_lock` at 8,504 bytes and
+75/75 tests passing, and `build` producing `price_lock` at 8,504 bytes and
 `price_ratchet` at 8,850 bytes.
+
+Sixteen of those tests drive `read` over a **real signed Pyth payload** —
+upstream's own test vector — inside a transaction carrying the Pyth state as a
+reference input and the update as a withdrawal redeemer. That covers the path
+every consumer actually calls, including the upstream binary parser, without a
+network or an API key. One full read costs 2,448,875 mem units, 17.5% of the
+per-transaction budget; see [ROADMAP.md](ROADMAP.md) for what that implies.
 
 Dependencies are pinned exactly, including `pyth-lazer-cardano` by commit hash
 — it publishes no tags and its manifest version is permanently `0.0.0`, so
@@ -152,7 +159,8 @@ exists. See [`monitor/README.md`](monitor/README.md).
 
 ```
 lib/pyth_guard.ak            the library
-lib/pyth_guard/tests.ak      test suite
+lib/pyth_guard/tests.ak      test suite: every rejection reason, boundaries
+lib/pyth_guard/e2e_tests.ak  end-to-end over a real signed payload
 validators/price_lock.ak     reference consumer: stateless, one-shot
 validators/price_ratchet.ak  reference consumer: stateful, shows replay defence
 docs/THREAT_MODEL.md         assumptions, and what breaks when they fail

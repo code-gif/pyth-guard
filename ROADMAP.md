@@ -27,7 +27,7 @@ into one reviewed place is most of this library's value.
 
 Written, tested and building. Verified end to end against Aiken v1.1.23,
 stdlib v3.0.0 and Plutus V3: `aiken fmt --check` clean, `aiken check` reporting
-59 of 59 unit tests passing, and `aiken build` emitting `price_lock` at 8,504
+75 of 75 unit tests passing, and `aiken build` emitting `price_lock` at 8,504
 bytes and `price_ratchet` at 8,850 bytes.
 
 - **`lib/pyth_guard.ak`** — generation-time freshness, timestamp consistency,
@@ -38,6 +38,13 @@ bytes and `price_ratchet` at 8,850 bytes.
 - **`lib/pyth_guard/tests.ak`** — 59 tests covering every rejection reason,
   both validity-bound encodings, the microsecond freshness boundary, and the
   carried-forward attack.
+- **`lib/pyth_guard/e2e_tests.ak`** — 16 tests driving `try_read` over a real
+  signed Pyth payload (upstream's own vector) inside a transaction carrying the
+  Pyth state as a reference input and the update as a withdrawal redeemer. This
+  is the path every consumer actually calls, and it exercises the upstream
+  binary parser rather than a hand-built fixture. The payload carries neither
+  `confidence` nor `publisher_count`, so the guard's fail-closed behaviour is
+  demonstrated on real bytes.
 - **`validators/price_lock.ak`** and **`validators/price_ratchet.ak`** — a
   stateless and a stateful consumer. The pair exists because replay protection
   is only meaningful in the second, and the first says so instead of
@@ -50,30 +57,53 @@ bytes and `price_ratchet` at 8,850 bytes.
 
 ## Next
 
-### M1 — execution budget and multi-feed reads
+### M1 — `read_many`, because the parse dominates
 
-Measure execution units against realistic multi-feed payloads. The compiled
-validators are 8,504 and 8,850 bytes, which is unremarkable, but size is not
-cost: the upstream parser is not free, and the per-read budget should be
-measured rather than assumed — particularly for a consumer settling several
-markets in one transaction.
+Measured, on the real payload, against the Plutus V3 per-transaction budget of
+14,000,000 mem / 10,000,000,000 cpu:
 
-Decide whether to expose a `read_many` for that case. Today each feed is read
-independently, which is correct but re-walks the update per feed.
+| | mem | cpu | share of mem budget |
+|---|---:|---:|---:|
+| guard logic alone (`check`) | 272,420 | 88,417,015 | 1.9% |
+| one full `try_read` | 2,448,875 | 771,362,276 | 17.5% |
+| two `try_read`s, same payload | 4,668,982 | 1,474,285,704 | 33.4% |
+
+Two conclusions, neither of which was obvious beforehand:
+
+**The parser costs about nine times the guard.** Optimising the checks would be
+wasted effort; essentially all of the budget goes to `pyth.get_updates`.
+
+**That cost is paid per read, not per transaction.** Two feeds cost 1.91x one
+feed, because `get_updates` re-parses every signed message from scratch and
+nothing memoises it. A consumer settling several markets therefore hits a
+ceiling around **six feeds per transaction**, and it is the payload being
+walked repeatedly rather than anything the consumer wrote.
+
+So `read_many` is no longer a question of taste: it is the difference between
+six feeds and a payload-bounded number of them. It should parse once and walk
+the resulting update per feed, returning one `Outcome` each. Deferred rather
+than done because it changes the public API shape and deserves its own
+design pass — in particular, whether a partial failure rejects the whole read.
 
 ### M2 — preprod deployment
 
-Deploy both reference validators to preprod and build the real transaction:
+Deploy both reference validators to preprod and submit the real transaction:
 validity window, Pyth state as reference input, zero withdrawal with the signed
-update as redeemer, consuming script alongside. Confirm on a live network that
-the guard rejects a deliberately stale payload, a carried-forward payload, and
-a transaction with no `invalid_hereafter`.
+update as redeemer, consuming script alongside.
 
-This is the gap the test suite cannot close on its own. Nothing in
-`tests.ak` constructs a `Transaction`: `try_read` is a two-line composition
-over `select`, which is tested directly, but the composition itself — the
-reference input, the withdrawal redeemer, the upstream parser — is exercised
-only on-chain. Requires a Pyth Pro key.
+`e2e_tests.ak` now covers the transaction *shape* offline, so what remains is
+specifically what a synthetic transaction cannot reach:
+
+- **Signature verification.** `get_updates` calls
+  `message.parse_without_verification`; signatures are checked only because the
+  genuine Pyth withdraw script executes. No offline test runs that script.
+- **The real Pyth state.** The tests use a stand-in policy id and withdraw
+  script hash. A deployment resolves the actual ones.
+- **Ledger acceptance.** Fees, script size, the execution budget as the node
+  enforces it, and whether the `max_age_ms` window really does get transactions
+  included at the rate the arithmetic in `docs/INTEGRATION.md` predicts.
+
+Requires a Pyth Pro key.
 
 ### M3 — monitor targets
 

@@ -7,6 +7,26 @@ may still change.
 
 ## [Unreleased]
 
+### Added
+
+- `lib/pyth_guard/e2e_tests.ak` — 16 tests driving `try_read` over a real
+  signed Pyth payload (upstream's own vector, Apache-2.0) inside a transaction
+  carrying the Pyth state as a reference input and the update as a withdrawal
+  redeemer. Covers the path every consumer calls, including the upstream binary
+  parser, with no network and no API key. The payload carries neither
+  `confidence` nor `publisher_count`, so fail-closed behaviour is demonstrated
+  on real bytes rather than on a fixture built to fail.
+
+### Measured
+
+- One full `try_read` costs 2,448,875 mem / 771,362,276 cpu — 17.5% of the
+  Plutus V3 per-transaction memory budget. The guard's own checks are 272,420
+  mem of that; **the upstream parser is roughly nine tenths of the cost**.
+- Two reads of the same payload cost 1.91x one read: `get_updates` re-parses
+  per call. That caps a multi-market consumer at about six feeds per
+  transaction and makes `read_many` a necessity rather than a convenience. See
+  ROADMAP M1.
+
 ## [0.1.0]
 
 First release.
@@ -57,5 +77,5 @@ First release.
 - `demo --check` runs the whole pipeline on synthetic data with a known
   injected lag and asserts it is reproduced exactly. CI runs it.
 
-[Unreleased]: https://github.com/pyth-guard/pyth-guard/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/pyth-guard/pyth-guard/releases/tag/v0.1.0
+[Unreleased]: https://github.com/code-gif/pyth-guard/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/code-gif/pyth-guard/releases/tag/v0.1.0
