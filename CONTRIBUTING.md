@@ -35,7 +35,7 @@ So:
   change. `aiken check` is cheap; there is no excuse for an untested branch.
 - **Rejection tests must pin the reason for rejection**, not merely that
   something failed. Compare against the exact `Rejection`
-  (`check(..) == Error(Stale)`), never write a bare `fail` test. Aiken erases a
+  (`check(..) == Rejected(Stale)`), never write a bare `fail` test. Aiken erases a
   discarded `let _ =` binding, so a `fail` test can pass without ever running
   the call it names — and a test that passes because of a typo in its own
   fixture is worse than no test. The header of `lib/pyth_guard/tests.ak`

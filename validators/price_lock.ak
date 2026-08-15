@@ -65,8 +65,11 @@ validator price_lock(pyth_id: PolicyId) {
   ) {
     expect Some(lock) = datum
 
-    let guard =
-      pyth_guard.new(lock.feed_id, lock.max_age_ms, lock.max_confidence_bps)
+    let guard = pyth_guard.new(
+      lock.feed_id,
+      lock.max_age_ms,
+      lock.max_confidence_bps,
+    )
 
     let price = pyth_guard.read(guard, pyth_id, self)
 

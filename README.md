@@ -42,7 +42,7 @@ test rejects_a_price_carried_forward_in_a_fresh_envelope() {
     guard(),
     update(now_ms - 1_000, [ada_feed_at(now_ms - 21_600_000)]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(Stale)
+  ) == Rejected(Stale)
 }
 ```
 
@@ -77,12 +77,13 @@ let price = pyth_guard.read(guard, pyth_id, self)
 Rejections are values, not just failures:
 
 ```aiken
-pub fn check(guard, update, range) -> Result<Price, Rejection>
+pub fn check(guard, update, range) -> Outcome   // Accepted(Price) | Rejected(Rejection)
 ```
 
 Every rejection has a distinct reason, so a test can assert *why* a price was
 refused. `read` and `validate` wrap this for callers that want the transaction
-to fail outright.
+to fail outright. (Aiken's prelude has no `Result`, so `Outcome` is defined by
+the library.)
 
 ## What it does not do
 
@@ -107,21 +108,31 @@ harder to use safely than one that does not.
 ## Build
 
 ```bash
-aiken check     # test suite
+aiken check     # 59 tests
 aiken build     # emits plutus.json
 aiken fmt       # CI runs --check
 ```
 
-Requires Aiken v1.1.21+. Dependencies are pinned exactly, including
-`pyth-lazer-cardano` by commit hash — it publishes no tags and its manifest
-version is permanently `0.0.0`, so nothing else identifies a release.
+Verified against Aiken v1.1.23, stdlib v3.0.0, Plutus V3: `fmt --check` clean,
+59/59 tests passing, and `build` producing `price_lock` at 8,504 bytes and
+`price_ratchet` at 8,850 bytes.
 
-**Gotcha worth knowing:** `pyth-lazer-cardano` targets `aiken-lang/stdlib`
-v3.0.0. Pinning a v2.x stdlib makes the compiler exit non-zero with *no error
-message whatsoever*. If a build fails silently, check your stdlib version
-first. This is also why there are no property-based tests: no released
-`aiken-lang/fuzz` targets stdlib v3, so adding it reintroduces exactly that
-conflict. See [ROADMAP.md](ROADMAP.md).
+Dependencies are pinned exactly, including `pyth-lazer-cardano` by commit hash
+— it publishes no tags and its manifest version is permanently `0.0.0`, so
+nothing else identifies a release.
+
+**Gotcha worth knowing.** On Windows, `aiken` v1.1.23 exits non-zero with *no
+diagnostic output at all* for a compile error — not a truncated message, not a
+partial one: nothing. Verified against a deliberately broken one-line project
+with no dependencies, in both Git Bash and PowerShell. If a build fails and
+says nothing, you are not looking at a stdlib problem, a dependency problem, or
+a corrupted checkout; you are looking at this. Build on Linux or macOS, or
+bisect by exit code alone.
+
+A stdlib version mismatch is worth ruling out early regardless, since
+`pyth-lazer-cardano` requires stdlib v3.0.0. It is also why there are no
+property-based tests: no released `aiken-lang/fuzz` targets stdlib v3. See
+[ROADMAP.md](ROADMAP.md).
 
 ## Off-chain monitor
 

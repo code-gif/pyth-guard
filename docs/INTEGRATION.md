@@ -157,7 +157,8 @@ and says so explicitly rather than performing a check it does not need.
 
 | symptom | cause |
 |---|---|
-| `aiken build` exits non-zero with **no message at all** | stdlib version conflict. `pyth-lazer-cardano` requires `aiken-lang/stdlib` v3.0.0; a v2.x pin fails silently. Check first, always. |
+| `aiken build` exits non-zero with **no message at all**, on Windows | Aiken v1.1.23 on Windows prints no diagnostics for *any* compile error. Reproduced on a one-line broken project with no dependencies. Build on Linux or macOS to see the error. |
+| the same, on Linux or macOS | Check the stdlib version first: `pyth-lazer-cardano` requires `aiken-lang/stdlib` v3.0.0. |
 | `transaction has no finite upper validity bound` | no `invalid_hereafter`. Some builders omit it by default. |
 | `feed carries no feedUpdateTimestamp` | the property was not in your subscription. Add it; the guard will not fall back. |
 | `price was generated more than max_age_ms before the deadline` on a live feed | either the deadline is too far ahead of the price, or the feed is being carried forward and is genuinely stale. Log `delivered_us` and `generated_us` separately to tell which. |

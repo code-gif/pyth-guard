@@ -67,9 +67,14 @@
 ////
 //// ## Errors as values
 ////
-//// The primitive is `check`, which returns `Result<Price, Rejection>`. Every
-//// rejection has a distinct reason, so a test can assert *why* a price was
-//// refused rather than merely that something failed.
+//// The primitive is `check`, which returns an `Outcome`: either `Accepted`
+//// with a price, or `Rejected` with a reason. Every rejection has a distinct
+//// reason, so a test can assert *why* a price was refused rather than merely
+//// that something failed.
+////
+//// (Aiken's prelude has no `Result`, so `Outcome` is defined here. Being
+//// domain-specific rather than generic is no loss: `Rejected(Stale)` reads
+//// better at a call site than `Error(Stale)` would.)
 
 use aiken/collection/list
 use aiken/interval.{Finite, IntervalBound}
@@ -121,6 +126,12 @@ pub type Price {
   /// When the message carrying it was produced, in microseconds. Always at or
   /// after `generated_us`. Useful for diagnostics; not a freshness signal.
   delivered_us: Int,
+}
+
+/// The result of a guarded read: a price, or the reason there is not one.
+pub type Outcome {
+  Accepted(Price)
+  Rejected(Rejection)
 }
 
 /// Why a price was refused. Each variant is reachable by exactly one
@@ -278,11 +289,7 @@ pub fn read(guard: Guard, pyth_id: PolicyId, self: Transaction) -> Price {
 
 /// `read` as a `Result`, for contracts that want to take a different branch
 /// rather than fail when no acceptable price is available.
-pub fn try_read(
-  guard: Guard,
-  pyth_id: PolicyId,
-  self: Transaction,
-) -> Result<Price, Rejection> {
+pub fn try_read(guard: Guard, pyth_id: PolicyId, self: Transaction) -> Outcome {
   select(guard, pyth.get_updates(pyth_id, self), self.validity_range)
 }
 
@@ -303,38 +310,43 @@ pub fn select(
   guard: Guard,
   updates: List<PriceUpdate>,
   range: ValidityRange,
-) -> Result<Price, Rejection> {
+) -> Outcome {
   when bounds(range) is {
-    None -> Error(UnboundedValidity)
+    None -> Rejected(UnboundedValidity)
     Some((deadline, earliest_ms)) -> {
-      let carrying =
-        list.filter(
-          updates,
-          fn(update) { count_feed(update.feeds, guard.feed_id) > 0 },
-        )
+      let carrying = list.filter(
+        updates,
+        fn(update) {
+          list.any(
+            update.feeds,
+            fn(f) { u32.as_int(f.feed_id) == guard.feed_id },
+          )
+        },
+      )
       when carrying is {
-        [] -> Error(FeedMissing)
+        [] -> Rejected(FeedMissing)
         [update] -> check_at(guard, update, deadline, earliest_ms)
-        _ -> Error(AmbiguousFeed)
+        _ -> Rejected(AmbiguousFeed)
       }
     }
   }
 }
 
 /// Validate an update already in hand against a validity range.
-pub fn validate(guard: Guard, update: PriceUpdate, range: ValidityRange) -> Price {
+pub fn validate(
+  guard: Guard,
+  update: PriceUpdate,
+  range: ValidityRange,
+) -> Price {
   unwrap(check(guard, update, range))
 }
 
 /// `validate` as a `Result`. This is the primitive; everything else wraps it.
-pub fn check(
-  guard: Guard,
-  update: PriceUpdate,
-  range: ValidityRange,
-) -> Result<Price, Rejection> {
+pub fn check(guard: Guard, update: PriceUpdate, range: ValidityRange) -> Outcome {
   when bounds(range) is {
-    None -> Error(UnboundedValidity)
-    Some((deadline, earliest_ms)) -> check_at(guard, update, deadline, earliest_ms)
+    None -> Rejected(UnboundedValidity)
+    Some((deadline, earliest_ms)) ->
+      check_at(guard, update, deadline, earliest_ms)
   }
 }
 
@@ -345,46 +357,62 @@ fn check_at(
   update: PriceUpdate,
   deadline_us: Int,
   earliest_ms: Option<Int>,
-) -> Result<Price, Rejection> {
+) -> Outcome {
   let delivered_us = u64.as_int(update.timestamp_us)
 
   if guard.max_age_ms < 0 || bad_bps(guard) {
-    Error(MalformedGuard)
+    Rejected(MalformedGuard)
   } else if future_dated(guard, delivered_us, deadline_us, earliest_ms) {
-    Error(FutureDated)
+    Rejected(FutureDated)
   } else if !channel_ok(guard, update) {
-    Error(WrongChannel)
+    Rejected(WrongChannel)
   } else {
-    when find_feed(update.feeds, guard.feed_id) is {
-      Error(reason) -> Error(reason)
-      Ok(feed) -> {
-        when generation_time(feed) is {
-          Error(reason) -> Error(reason)
-          Ok(generated_us) ->
-            if generated_us > delivered_us {
-              // A price cannot have been produced after the message that
-              // carried it. Either the payload is inconsistent or we have
-              // misread the encoding; neither is a thing to price against.
-              Error(InconsistentTimestamps)
-            } else if generated_us + guard.max_age_ms * 1000 < deadline_us {
-              // The ledger accepts this transaction at some point at or
-              // before the deadline, so requiring freshness *at* the deadline
-              // holds for every moment it could actually be included.
-              // Shrinking the deadline cannot weaken this: a deadline already
-              // past makes the transaction unacceptable to the ledger.
-              //
-              // Measured on the generation time, not the delivery time. Both
-              // sides are microseconds, and nothing is divided.
-              Error(Stale)
-            } else {
-              when session_ok(guard, feed) is {
-                Error(reason) -> Error(reason)
-                Ok(_) -> extract(guard, feed, generated_us, delivered_us)
-              }
-            }
+    // `list.find` would take the first match. If an update ever carried the
+    // same feed id twice, "the first one" is not a decision this library
+    // should make silently.
+    when
+      list.filter(
+        update.feeds,
+        fn(f) { u32.as_int(f.feed_id) == guard.feed_id },
+      )
+    is {
+      [] -> Rejected(FeedMissing)
+      [feed] -> check_feed(guard, feed, delivered_us, deadline_us)
+      _ -> Rejected(AmbiguousFeed)
+    }
+  }
+}
+
+fn check_feed(
+  guard: Guard,
+  feed: Feed,
+  delivered_us: Int,
+  deadline_us: Int,
+) -> Outcome {
+  when generation_time(feed) is {
+    None -> Rejected(GenerationTimeUnavailable)
+    Some(generated_us) ->
+      if generated_us > delivered_us {
+        // A price cannot have been produced after the message that carried
+        // it. Either the payload is inconsistent or we have misread the
+        // encoding; neither is a thing to price against.
+        Rejected(InconsistentTimestamps)
+      } else if generated_us + guard.max_age_ms * 1000 < deadline_us {
+        // The ledger accepts this transaction at some point at or before the
+        // deadline, so requiring freshness *at* the deadline holds for every
+        // moment it could actually be included. Shrinking the deadline cannot
+        // weaken this: a deadline already past makes the transaction
+        // unacceptable to the ledger.
+        //
+        // Measured on the generation time, not the delivery time. Both sides
+        // are microseconds, and nothing is divided.
+        Rejected(Stale)
+      } else {
+        when session_error(guard, feed) is {
+          Some(reason) -> Rejected(reason)
+          None -> extract(guard, feed, generated_us, delivered_us)
         }
       }
-    }
   }
 }
 
@@ -418,29 +446,29 @@ fn future_dated(
   }
 }
 
-fn generation_time(feed: Feed) -> Result<Int, Rejection> {
+/// Fails closed. A consumer that has not subscribed to the
+/// `feedUpdateTimestamp` property cannot establish price freshness at all, and
+/// silently falling back to the message timestamp would reintroduce exactly
+/// the defect this check exists to close.
+fn generation_time(feed: Feed) -> Option<Int> {
   when feed.feed_update_timestamp is {
-    // Fails closed. A consumer that has not subscribed to the
-    // `feedUpdateTimestamp` property cannot establish price freshness at all,
-    // and silently falling back to the message timestamp would reintroduce
-    // exactly the defect this check exists to close.
-    None -> Error(GenerationTimeUnavailable)
-    Some(None) -> Error(GenerationTimeUnavailable)
-    Some(Some(t)) -> Ok(u64.as_int(t))
+    None -> None
+    Some(None) -> None
+    Some(Some(t)) -> Some(u64.as_int(t))
   }
 }
 
-fn session_ok(guard: Guard, feed: Feed) -> Result<Void, Rejection> {
+fn session_error(guard: Guard, feed: Feed) -> Option<Rejection> {
   when guard.allowed_sessions is {
-    None -> Ok(Void)
+    None -> None
     Some(allowed) ->
       when feed.market_session is {
-        None -> Error(SessionUnavailable)
+        None -> Some(SessionUnavailable)
         Some(session) ->
           if list.has(allowed, session) {
-            Ok(Void)
+            None
           } else {
-            Error(SessionNotAllowed)
+            Some(SessionNotAllowed)
           }
       }
   }
@@ -451,7 +479,7 @@ fn extract(
   feed: Feed,
   generated_us: Int,
   delivered_us: Int,
-) -> Result<Price, Rejection> {
+) -> Outcome {
   // The wire format encodes value-carrying properties twice-optionally: the
   // outer `Option` means "was this property part of the subscription", the
   // inner one means "was the value non-zero". `exponent` and `publisher_count`
@@ -460,26 +488,27 @@ fn extract(
   // singly optional rejects the tightest prices Pyth can publish, because
   // perfectly agreeing publishers arrive as `Some(None)`.
   when feed.price is {
-    None -> Error(PriceUnavailable)
-    Some(None) -> Error(PriceUnavailable)
+    None -> Rejected(PriceUnavailable)
+    Some(None) -> Rejected(PriceUnavailable)
     Some(Some(value)) ->
       if value <= 0 {
         // Narrower than the wire domain, which is a signed non-zero i64.
         // Negative-quoting feeds (energy futures, calendar spreads, policy
-        // rates) are out of scope, and `confidence_of` below relies on this
-        // sign to compare against a basis-point bound.
-        Error(NonPositivePrice)
+        // rates) are out of scope, and `confidence_error` relies on this sign
+        // to compare against a basis-point bound.
+        Rejected(NonPositivePrice)
       } else {
         when feed.exponent is {
-          None -> Error(ExponentUnavailable)
-          Some(exponent) ->
-            when confidence_of(guard, feed, value) is {
-              Error(reason) -> Error(reason)
-              Ok(confidence) ->
-                when publishers_ok(guard, feed) is {
-                  Error(reason) -> Error(reason)
-                  Ok(_) ->
-                    Ok(
+          None -> Rejected(ExponentUnavailable)
+          Some(exponent) -> {
+            let confidence = confidence_value(feed)
+            when confidence_error(guard, feed, value, confidence) is {
+              Some(reason) -> Rejected(reason)
+              None ->
+                when publishers_error(guard, feed) is {
+                  Some(reason) -> Rejected(reason)
+                  None ->
+                    Accepted(
                       Price {
                         value,
                         exponent,
@@ -490,67 +519,61 @@ fn extract(
                     )
                 }
             }
+          }
         }
       }
   }
 }
 
-fn confidence_of(guard: Guard, feed: Feed, value: Int) -> Result<Int, Rejection> {
+/// Zero confidence arrives as an absent *inner* value, because the property is
+/// non-zero constrained upstream. An absent *outer* value means the property
+/// was never subscribed to, which `confidence_error` treats separately.
+fn confidence_value(feed: Feed) -> Int {
+  when feed.confidence is {
+    None -> 0
+    Some(None) -> 0
+    Some(Some(c)) -> c
+  }
+}
+
+fn confidence_error(
+  guard: Guard,
+  feed: Feed,
+  value: Int,
+  confidence: Int,
+) -> Option<Rejection> {
   when guard.max_confidence_bps is {
-    None ->
-      when feed.confidence is {
-        None -> Ok(0)
-        Some(None) -> Ok(0)
-        Some(Some(c)) -> Ok(c)
-      }
+    None -> None
     Some(bps) ->
       when feed.confidence is {
         // A bound was required and the update cannot support checking it.
         // Treating an unsubscribed property as zero confidence would turn
         // "we did not ask" into "the publishers agreed exactly".
-        None -> Error(ConfidenceUnavailable)
-        Some(None) -> Ok(0)
-        Some(Some(c)) ->
-          if c < 0 {
-            Error(ConfidenceTooWide)
-          } else if c * 10_000 <= value * bps {
-            Ok(c)
+        None -> Some(ConfidenceUnavailable)
+        Some(_) ->
+          if confidence < 0 || confidence * 10_000 > value * bps {
+            Some(ConfidenceTooWide)
           } else {
-            Error(ConfidenceTooWide)
+            None
           }
       }
   }
 }
 
-fn publishers_ok(guard: Guard, feed: Feed) -> Result<Void, Rejection> {
+fn publishers_error(guard: Guard, feed: Feed) -> Option<Rejection> {
   when guard.min_publishers is {
-    None -> Ok(Void)
+    None -> None
     Some(floor) ->
       when feed.publisher_count is {
-        None -> Error(PublisherCountUnavailable)
+        None -> Some(PublisherCountUnavailable)
         Some(count) ->
           if u16.as_int(count) >= floor {
-            Ok(Void)
+            None
           } else {
-            Error(TooFewPublishers)
+            Some(TooFewPublishers)
           }
       }
   }
-}
-
-fn find_feed(feeds: List<Feed>, feed_id: Int) -> Result<Feed, Rejection> {
-  // `list.find` would take the first match. If an update ever carried the same
-  // feed id twice, "the first one" is not a decision this library should make
-  // silently.
-  when list.filter(feeds, fn(f) { u32.as_int(f.feed_id) == feed_id }) is {
-    [] -> Error(FeedMissing)
-    [feed] -> Ok(feed)
-    _ -> Error(AmbiguousFeed)
-  }
-}
-
-fn count_feed(feeds: List<Feed>, feed_id: Int) -> Int {
-  list.length(list.filter(feeds, fn(f) { u32.as_int(f.feed_id) == feed_id }))
 }
 
 fn channel_ok(guard: Guard, update: PriceUpdate) -> Bool {
@@ -567,7 +590,7 @@ fn bad_bps(guard: Guard) -> Bool {
   }
 }
 
-/// The deadline and the earliest acceptable instant, both in **microseconds**.
+/// The deadline and the earliest acceptable instant.
 ///
 /// The deadline is in microseconds; the earliest instant is in
 /// **milliseconds**, unconverted, because that is the unit the future-dating
@@ -584,12 +607,11 @@ fn bounds(range: ValidityRange) -> Option<(Int, Option<Int>)> {
   let IntervalBound { bound_type, is_inclusive } = range.upper_bound
   when bound_type is {
     Finite(upper) -> {
-      let deadline_us =
-        if is_inclusive {
-          upper * 1000
-        } else {
-          ( upper - 1 ) * 1000
-        }
+      let deadline_us = if is_inclusive {
+        upper * 1000
+      } else {
+        ( upper - 1 ) * 1000
+      }
       Some((deadline_us, lower_bound_ms(range)))
     }
     _ -> None
@@ -611,41 +633,50 @@ fn lower_bound_ms(range: ValidityRange) -> Option<Int> {
   }
 }
 
-fn unwrap(result: Result<Price, Rejection>) -> Price {
-  // The messages cost nothing in a production build: `aiken build` erases
-  // them unless tracing is explicitly enabled. During `aiken check` they turn
-  // a bare script failure into a diagnosis.
-  when result is {
-    Ok(price) -> price
-    Error(UnboundedValidity) ->
+/// Turn an `Outcome` into a `Price`, failing the transaction otherwise.
+///
+/// The messages cost nothing in a production build: `aiken build` erases them
+/// unless tracing is explicitly enabled. During `aiken check` they turn a bare
+/// script failure into a diagnosis.
+fn unwrap(outcome: Outcome) -> Price {
+  when outcome is {
+    Accepted(price) -> price
+    Rejected(UnboundedValidity) ->
       fail @"pyth_guard: transaction has no finite upper validity bound"
-    Error(MalformedGuard) ->
+    Rejected(MalformedGuard) ->
       fail @"pyth_guard: guard has a negative max_age_ms or max_confidence_bps"
-    Error(FeedMissing) -> fail @"pyth_guard: requested feed is not in the update"
-    Error(AmbiguousFeed) ->
+    Rejected(FeedMissing) ->
+      fail @"pyth_guard: requested feed is not in the update"
+    Rejected(AmbiguousFeed) ->
       fail @"pyth_guard: requested feed appears more than once"
-    Error(Stale) ->
-      fail @"pyth_guard: price was generated more than max_age_ms before the deadline"
-    Error(GenerationTimeUnavailable) ->
-      fail @"pyth_guard: feed carries no feedUpdateTimestamp; subscribe to that property"
-    Error(InconsistentTimestamps) ->
-      fail @"pyth_guard: feed claims to predate the message carrying it"
-    Error(FutureDated) -> fail @"pyth_guard: update is dated after the deadline"
-    Error(WrongChannel) -> fail @"pyth_guard: update arrived on an unexpected channel"
-    Error(SessionNotAllowed) ->
+    Rejected(Stale) ->
+      fail @"pyth_guard: price generated more than max_age_ms before the deadline"
+    Rejected(GenerationTimeUnavailable) ->
+      fail @"pyth_guard: feed carries no feedUpdateTimestamp; subscribe to it"
+    Rejected(InconsistentTimestamps) ->
+      fail @"pyth_guard: feed claims to postdate the message carrying it"
+    Rejected(FutureDated) ->
+      fail @"pyth_guard: update is dated after the deadline"
+    Rejected(WrongChannel) ->
+      fail @"pyth_guard: update arrived on an unexpected channel"
+    Rejected(SessionNotAllowed) ->
       fail @"pyth_guard: market session is not one this contract prices in"
-    Error(SessionUnavailable) ->
-      fail @"pyth_guard: session constraint set but update carries no market session"
-    Error(PriceUnavailable) -> fail @"pyth_guard: update carries no price for this feed"
-    Error(ExponentUnavailable) -> fail @"pyth_guard: update carries no exponent"
-    Error(NonPositivePrice) -> fail @"pyth_guard: price mantissa is zero or negative"
-    Error(ConfidenceUnavailable) ->
+    Rejected(SessionUnavailable) ->
+      fail @"pyth_guard: session constraint set but update carries no session"
+    Rejected(PriceUnavailable) ->
+      fail @"pyth_guard: update carries no price for this feed"
+    Rejected(ExponentUnavailable) ->
+      fail @"pyth_guard: update carries no exponent"
+    Rejected(NonPositivePrice) ->
+      fail @"pyth_guard: price mantissa is zero or negative"
+    Rejected(ConfidenceUnavailable) ->
       fail @"pyth_guard: confidence bound required but update carries no confidence"
-    Error(ConfidenceTooWide) ->
+    Rejected(ConfidenceTooWide) ->
       fail @"pyth_guard: confidence exceeds max_confidence_bps of price"
-    Error(PublisherCountUnavailable) ->
+    Rejected(PublisherCountUnavailable) ->
       fail @"pyth_guard: publisher floor required but update carries no publisher count"
-    Error(TooFewPublishers) -> fail @"pyth_guard: too few contributing publishers"
+    Rejected(TooFewPublishers) ->
+      fail @"pyth_guard: too few contributing publishers"
   }
 }
 
@@ -752,7 +783,7 @@ fn div_floor(numerator: Int, denominator: Int) -> Int {
   if numerator >= 0 {
     numerator / denominator
   } else {
-    -( ( -numerator + denominator - 1 ) / denominator )
+    -(( -numerator + denominator - 1 ) / denominator)
   }
 }
 
@@ -761,6 +792,6 @@ fn div_ceil(numerator: Int, denominator: Int) -> Int {
   if numerator >= 0 {
     ( numerator + denominator - 1 ) / denominator
   } else {
-    -( -numerator / denominator )
+    -(-numerator / denominator)
   }
 }

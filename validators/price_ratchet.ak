@@ -64,8 +64,11 @@ validator price_ratchet(pyth_id: PolicyId) {
     expect Some(own_input) = find_input(self.inputs, own_ref)
     let own_address = own_input.output.address
 
-    let guard =
-      pyth_guard.new(state.feed_id, state.max_age_ms, state.max_confidence_bps)
+    let guard = pyth_guard.new(
+      state.feed_id,
+      state.max_age_ms,
+      state.max_confidence_bps,
+    )
 
     let price = pyth_guard.read(guard, pyth_id, self)
 
@@ -76,8 +79,10 @@ validator price_ratchet(pyth_id: PolicyId) {
 
     // Exactly one continuing output. Allowing two would let a spend fork the
     // state into a fresh copy and a stale one.
-    expect [continuing] =
-      list.filter(self.outputs, fn(output) { output.address == own_address })
+    expect [continuing] = list.filter(
+      self.outputs,
+      fn(output) { output.address == own_address },
+    )
     expect InlineDatum(raw) = continuing.datum
     expect next: RatchetDatum = raw
 

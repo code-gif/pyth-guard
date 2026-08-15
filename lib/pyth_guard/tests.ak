@@ -10,8 +10,8 @@
 //// never reached. The suite then reports that a guard rejects stale prices
 //// when it has proven no such thing.
 ////
-//// So `check` returns `Result<Price, Rejection>` and these tests compare
-//// against the exact `Rejection`. A test named `rejects_a_stale_update` fails
+//// So `check` returns an `Outcome` and these tests compare against the exact
+//// `Rejected(..)` reason. A test named `rejects_a_stale_update` fails
 //// if the update is refused for any reason other than staleness.
 ////
 //// The two genuine `fail` tests below cover `expect` bounds that have no
@@ -31,11 +31,11 @@ use aiken/interval.{Finite, Interval, IntervalBound}
 use cardano/transaction.{ValidityRange}
 use pyth.{Closed, Feed, MarketSession, PriceUpdate, Regular}
 use pyth_guard.{
-  AmbiguousFeed, ConfidenceTooWide, ConfidenceUnavailable, ExponentUnavailable,
-  FeedMissing, FutureDated, GenerationTimeUnavailable, InconsistentTimestamps,
-  MalformedGuard, NonPositivePrice, Price, PriceUnavailable,
-  PublisherCountUnavailable, Rejection, SessionNotAllowed, SessionUnavailable,
-  Stale, TooFewPublishers, UnboundedValidity, WrongChannel,
+  Accepted, AmbiguousFeed, ConfidenceTooWide, ConfidenceUnavailable,
+  ExponentUnavailable, FeedMissing, FutureDated, GenerationTimeUnavailable,
+  InconsistentTimestamps, MalformedGuard, NonPositivePrice, Outcome, Price,
+  PriceUnavailable, PublisherCountUnavailable, Rejected, SessionNotAllowed,
+  SessionUnavailable, Stale, TooFewPublishers, UnboundedValidity, WrongChannel,
 }
 use types/u16.{U16}
 use types/u32
@@ -92,11 +92,10 @@ fn feed_full(
   generated_ms: Option<Int>,
   session: Option<MarketSession>,
 ) -> Feed {
-  let generated =
-    when generated_ms is {
-      None -> None
-      Some(ms) -> Some(Some(u64.from_int(ms * 1000)))
-    }
+  let generated = when generated_ms is {
+    None -> None
+    Some(ms) -> Some(Some(u64.from_int(ms * 1000)))
+  }
   Feed {
     feed_id: u32.from_int(id),
     price,
@@ -130,12 +129,11 @@ fn feed_at(
   publishers: Int,
   generated_ms: Int,
 ) -> Feed {
-  let encoded_confidence =
-    if confidence == 0 {
-      None
-    } else {
-      Some(confidence)
-    }
+  let encoded_confidence = if confidence == 0 {
+    None
+  } else {
+    Some(confidence)
+  }
   feed_full(
     id,
     Some(Some(price)),
@@ -170,11 +168,8 @@ fn guard() -> pyth_guard.Guard {
   pyth_guard.new(ada_usd, max_age, 50)
 }
 
-fn expected_price(
-  generated_ms: Int,
-  delivered_ms: Int,
-) -> Result<Price, Rejection> {
-  Ok(
+fn expected_price(generated_ms: Int, delivered_ms: Int) -> Outcome {
+  Accepted(
     Price {
       value: 42_000_000,
       exponent: -8,
@@ -212,7 +207,7 @@ test rejects_a_price_carried_forward_in_a_fresh_envelope() {
     guard(),
     update(now_ms - 1_000, [ada_feed_at(now_ms - 21_600_000)]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(Stale)
+  ) == Rejected(Stale)
 }
 
 /// The mirror of the above: same envelope, price generated a moment ago.
@@ -235,13 +230,13 @@ test delivery_time_does_not_rescue_a_stale_price() {
       guard(),
       update(now_ms - 120_000, [ada_feed_at(now_ms - 120_000)]),
       window(now_ms - 10_000, now_ms),
-    ) == Error(Stale),
+    ) == Rejected(Stale),
     // New envelope, old price: still stale.
     pyth_guard.check(
       guard(),
       update(now_ms, [ada_feed_at(now_ms - 120_000)]),
       window(now_ms - 10_000, now_ms),
-    ) == Error(Stale),
+    ) == Rejected(Stale),
   }
 }
 
@@ -249,21 +244,20 @@ test delivery_time_does_not_rescue_a_stale_price() {
 /// cannot establish price freshness at all, and falling back to the message
 /// timestamp would silently reinstate the defect above.
 test rejects_a_feed_with_no_generation_timestamp() {
-  let bare =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      Some(Some(16_800)),
-      Some(u16.from_int(28)),
-      None,
-      Some(Regular),
-    )
+  let bare = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    Some(Some(16_800)),
+    Some(u16.from_int(28)),
+    None,
+    Some(Regular),
+  )
   pyth_guard.check(
     guard(),
     update(now_ms - 1_000, [bare]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(GenerationTimeUnavailable)
+  ) == Rejected(GenerationTimeUnavailable)
 }
 
 /// A price cannot have been generated after the message that carried it.
@@ -272,7 +266,7 @@ test rejects_a_feed_generated_after_its_message() {
     guard(),
     update(now_ms - 5_000, [ada_feed_at(now_ms - 1_000)]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(InconsistentTimestamps)
+  ) == Rejected(InconsistentTimestamps)
 }
 
 // ----------------------------------------------------------------- freshness
@@ -282,7 +276,7 @@ test accepts_a_price_exactly_at_the_age_limit() {
     guard(),
     update(now_ms, [ada_feed_at(now_ms - max_age)]),
     window(now_ms - 10_000, now_ms),
-  ) != Error(Stale)
+  ) != Rejected(Stale)
 }
 
 /// One microsecond past the limit. The library compares in microseconds
@@ -290,26 +284,24 @@ test accepts_a_price_exactly_at_the_age_limit() {
 /// rounded to the nearest millisecond.
 test rejects_a_price_one_microsecond_too_old() {
   let generated_us = now_us - max_age * 1000 - 1
-  let carried =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      Some(Some(16_800)),
-      Some(u16.from_int(28)),
-      None,
-      Some(Regular),
-    )
-  let precise =
-    Feed {
-      ..carried,
-      feed_update_timestamp: Some(Some(u64.from_int(generated_us))),
-    }
+  let carried = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    Some(Some(16_800)),
+    Some(u16.from_int(28)),
+    None,
+    Some(Regular),
+  )
+  let precise = Feed {
+    ..carried,
+    feed_update_timestamp: Some(Some(u64.from_int(generated_us))),
+  }
   pyth_guard.check(
     guard(),
     update(now_ms, [precise]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(Stale)
+  ) == Rejected(Stale)
 }
 
 /// The failure mode the library was written for, in its original form.
@@ -318,7 +310,7 @@ test rejects_an_hour_old_update() {
     guard(),
     fresh_update(now_ms - 3_600_000),
     window(now_ms - 10_000, now_ms),
-  ) == Error(Stale)
+  ) == Rejected(Stale)
 }
 
 test rejects_a_future_dated_message() {
@@ -326,13 +318,15 @@ test rejects_a_future_dated_message() {
     guard(),
     fresh_update(now_ms + 1),
     window(now_ms - 10_000, now_ms),
-  ) == Error(FutureDated)
+  ) == Rejected(FutureDated)
 }
 
 test accepts_a_message_exactly_at_the_deadline() {
-  pyth_guard.check(guard(), fresh_update(now_ms), window(now_ms - 10_000, now_ms)) != Error(
-    FutureDated,
-  )
+  pyth_guard.check(
+    guard(),
+    fresh_update(now_ms),
+    window(now_ms - 10_000, now_ms),
+  ) != Rejected(FutureDated)
 }
 
 // -------------------------------------------------------- strict future dating
@@ -342,7 +336,7 @@ test accepts_a_message_exactly_at_the_deadline() {
 /// time five minutes ahead passes simply by setting the deadline to match.
 test default_future_dating_is_satisfiable_by_the_builder() {
   let ahead = now_ms + 300_000
-  pyth_guard.check(guard(), fresh_update(ahead), window(now_ms, ahead)) != Error(
+  pyth_guard.check(guard(), fresh_update(ahead), window(now_ms, ahead)) != Rejected(
     FutureDated,
   )
 }
@@ -356,7 +350,7 @@ test strict_future_dating_catches_what_the_default_misses() {
     guard() |> pyth_guard.with_strict_future_dating(),
     fresh_update(ahead),
     window(now_ms, ahead),
-  ) == Error(FutureDated)
+  ) == Rejected(FutureDated)
 }
 
 /// ...and a correctly built transaction — one whose `invalid_before` is the
@@ -376,7 +370,7 @@ test strict_future_dating_degrades_on_an_open_lower_bound() {
     guard() |> pyth_guard.with_strict_future_dating(),
     fresh_update(now_ms - 1_000),
     interval.before(now_ms),
-  ) != Error(FutureDated)
+  ) != Rejected(FutureDated)
 }
 
 // --------------------------------------------- validity range interpretation
@@ -390,10 +384,10 @@ test strict_future_dating_degrades_on_an_open_lower_bound() {
 test the_two_bound_readings_differ_by_one_millisecond() {
   let payload = update(now_ms, [ada_feed_at(now_ms - max_age - 1)])
   and {
-    pyth_guard.check(guard(), payload, window(now_ms - 10_000, now_ms)) == Error(
+    pyth_guard.check(guard(), payload, window(now_ms - 10_000, now_ms)) == Rejected(
       Stale,
     ),
-    pyth_guard.check(guard(), payload, ledger_window(now_ms - 10_000, now_ms)) != Error(
+    pyth_guard.check(guard(), payload, ledger_window(now_ms - 10_000, now_ms)) != Rejected(
       Stale,
     ),
   }
@@ -407,7 +401,7 @@ test rejects_an_unbounded_validity_range() {
     guard(),
     fresh_update(now_ms - 1_000),
     interval.after(now_ms - 10_000),
-  ) == Error(UnboundedValidity)
+  ) == Rejected(UnboundedValidity)
 }
 
 /// An unbounded *lower* bound is fine by default: freshness binds at the
@@ -425,9 +419,12 @@ test accepts_an_unbounded_lower_bound() {
 test rejects_a_missing_feed() {
   pyth_guard.check(
     guard(),
-    update(now_ms - 1_000, [feed_at(17, 42_000_000, 16_800, 28, now_ms - 1_000)]),
+    update(
+      now_ms - 1_000,
+      [feed_at(17, 42_000_000, 16_800, 28, now_ms - 1_000)],
+    ),
     window(now_ms - 10_000, now_ms),
-  ) == Error(FeedMissing)
+  ) == Rejected(FeedMissing)
 }
 
 /// Picks the requested feed out of a multi-feed update rather than the first.
@@ -459,7 +456,7 @@ test rejects_the_same_feed_twice_in_one_update() {
       ],
     ),
     window(now_ms - 10_000, now_ms),
-  ) == Error(AmbiguousFeed)
+  ) == Rejected(AmbiguousFeed)
 }
 
 // ----------------------------------------------------- selection over updates
@@ -492,11 +489,11 @@ test select_rejects_two_updates_carrying_the_same_feed() {
       ),
     ],
     window(now_ms - 10_000, now_ms),
-  ) == Error(AmbiguousFeed)
+  ) == Rejected(AmbiguousFeed)
 }
 
 test select_rejects_an_empty_update_list() {
-  pyth_guard.select(guard(), [], window(now_ms - 10_000, now_ms)) == Error(
+  pyth_guard.select(guard(), [], window(now_ms - 10_000, now_ms)) == Rejected(
     FeedMissing,
   )
 }
@@ -509,21 +506,20 @@ test select_rejects_an_empty_update_list() {
 /// close moments after a genuinely fresh print, which the age check alone
 /// would wave through.
 test rejects_a_closed_market_when_a_session_is_required() {
-  let shut =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      Some(Some(16_800)),
-      Some(u16.from_int(28)),
-      Some(now_ms - 1_000),
-      Some(Closed),
-    )
+  let shut = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    Some(Some(16_800)),
+    Some(u16.from_int(28)),
+    Some(now_ms - 1_000),
+    Some(Closed),
+  )
   pyth_guard.check(
     guard() |> pyth_guard.with_sessions([Regular]),
     update(now_ms - 1_000, [shut]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(SessionNotAllowed)
+  ) == Rejected(SessionNotAllowed)
 }
 
 test accepts_an_allowed_session() {
@@ -537,16 +533,15 @@ test accepts_an_allowed_session() {
 /// A 24/7 feed with no session constraint is unaffected, including when the
 /// property is absent entirely.
 test ignores_the_session_when_none_is_required() {
-  let sessionless =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      Some(Some(16_800)),
-      Some(u16.from_int(28)),
-      Some(now_ms - 1_000),
-      None,
-    )
+  let sessionless = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    Some(Some(16_800)),
+    Some(u16.from_int(28)),
+    Some(now_ms - 1_000),
+    None,
+  )
   pyth_guard.check(
     guard(),
     update(now_ms - 1_000, [sessionless]),
@@ -555,21 +550,20 @@ test ignores_the_session_when_none_is_required() {
 }
 
 test rejects_when_a_required_session_cannot_be_checked() {
-  let sessionless =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      Some(Some(16_800)),
-      Some(u16.from_int(28)),
-      Some(now_ms - 1_000),
-      None,
-    )
+  let sessionless = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    Some(Some(16_800)),
+    Some(u16.from_int(28)),
+    Some(now_ms - 1_000),
+    None,
+  )
   pyth_guard.check(
     guard() |> pyth_guard.with_sessions([Regular]),
     update(now_ms - 1_000, [sessionless]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(SessionUnavailable)
+  ) == Rejected(SessionUnavailable)
 }
 
 // ------------------------------------------------------------------ confidence
@@ -583,7 +577,7 @@ test rejects_a_wide_confidence_interval() {
       [feed_at(ada_usd, 42_000_000, 252_000, 28, now_ms - 1_000)],
     ),
     window(now_ms - 10_000, now_ms),
-  ) == Error(ConfidenceTooWide)
+  ) == Rejected(ConfidenceTooWide)
 }
 
 test accepts_confidence_exactly_at_the_ceiling() {
@@ -595,7 +589,7 @@ test accepts_confidence_exactly_at_the_ceiling() {
       [feed_at(ada_usd, 42_000_000, 210_000, 28, now_ms - 1_000)],
     ),
     window(now_ms - 10_000, now_ms),
-  ) != Error(ConfidenceTooWide)
+  ) != Rejected(ConfidenceTooWide)
 }
 
 test rejects_confidence_one_unit_over_the_ceiling() {
@@ -606,7 +600,7 @@ test rejects_confidence_one_unit_over_the_ceiling() {
       [feed_at(ada_usd, 42_000_000, 210_001, 28, now_ms - 1_000)],
     ),
     window(now_ms - 10_000, now_ms),
-  ) == Error(ConfidenceTooWide)
+  ) == Rejected(ConfidenceTooWide)
 }
 
 /// Zero confidence arrives as an absent inner value. Treating that as
@@ -614,9 +608,12 @@ test rejects_confidence_one_unit_over_the_ceiling() {
 test accepts_zero_confidence() {
   pyth_guard.check(
     guard(),
-    update(now_ms - 1_000, [feed_at(ada_usd, 42_000_000, 0, 28, now_ms - 1_000)]),
+    update(
+      now_ms - 1_000,
+      [feed_at(ada_usd, 42_000_000, 0, 28, now_ms - 1_000)],
+    ),
     window(now_ms - 10_000, now_ms),
-  ) == Ok(
+  ) == Accepted(
     Price {
       value: 42_000_000,
       exponent: -8,
@@ -631,40 +628,38 @@ test accepts_zero_confidence() {
 /// the bound cannot be checked. Reading an unsubscribed property as zero would
 /// turn "we did not ask" into "the publishers agreed exactly".
 test rejects_when_a_required_confidence_bound_cannot_be_checked() {
-  let bare =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      None,
-      Some(u16.from_int(28)),
-      Some(now_ms - 1_000),
-      Some(Regular),
-    )
+  let bare = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    None,
+    Some(u16.from_int(28)),
+    Some(now_ms - 1_000),
+    Some(Regular),
+  )
   pyth_guard.check(
     guard(),
     update(now_ms - 1_000, [bare]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(ConfidenceUnavailable)
+  ) == Rejected(ConfidenceUnavailable)
 }
 
 /// ...but a guard that explicitly opted out has no reason to demand it.
 test accepts_absent_confidence_when_no_bound_was_requested() {
-  let bare =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      None,
-      Some(u16.from_int(28)),
-      Some(now_ms - 1_000),
-      Some(Regular),
-    )
+  let bare = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    None,
+    Some(u16.from_int(28)),
+    Some(now_ms - 1_000),
+    Some(Regular),
+  )
   pyth_guard.check(
     pyth_guard.new_without_confidence_bound(ada_usd, max_age),
     update(now_ms - 1_000, [bare]),
     window(now_ms - 10_000, now_ms),
-  ) == Ok(
+  ) == Accepted(
     Price {
       value: 42_000_000,
       exponent: -8,
@@ -685,7 +680,7 @@ test rejects_too_few_publishers() {
       [feed_at(ada_usd, 42_000_000, 16_800, 9, now_ms - 1_000)],
     ),
     window(now_ms - 10_000, now_ms),
-  ) == Error(TooFewPublishers)
+  ) == Rejected(TooFewPublishers)
 }
 
 test accepts_exactly_enough_publishers() {
@@ -696,25 +691,24 @@ test accepts_exactly_enough_publishers() {
       [feed_at(ada_usd, 42_000_000, 16_800, 10, now_ms - 1_000)],
     ),
     window(now_ms - 10_000, now_ms),
-  ) != Error(TooFewPublishers)
+  ) != Rejected(TooFewPublishers)
 }
 
 test rejects_when_a_required_publisher_floor_cannot_be_checked() {
-  let bare =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      Some(-8),
-      Some(Some(16_800)),
-      None,
-      Some(now_ms - 1_000),
-      Some(Regular),
-    )
+  let bare = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    Some(-8),
+    Some(Some(16_800)),
+    None,
+    Some(now_ms - 1_000),
+    Some(Regular),
+  )
   pyth_guard.check(
     guard() |> pyth_guard.with_min_publishers(10),
     update(now_ms - 1_000, [bare]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(PublisherCountUnavailable)
+  ) == Rejected(PublisherCountUnavailable)
 }
 
 // ---------------------------------------------------------------------- channel
@@ -724,7 +718,7 @@ test rejects_a_mismatched_channel() {
     guard() |> pyth_guard.with_channel(2),
     fresh_update(now_ms - 1_000),
     window(now_ms - 10_000, now_ms),
-  ) == Error(WrongChannel)
+  ) == Rejected(WrongChannel)
 }
 
 test accepts_the_expected_channel() {
@@ -732,7 +726,7 @@ test accepts_the_expected_channel() {
     guard() |> pyth_guard.with_channel(1),
     fresh_update(now_ms - 1_000),
     window(now_ms - 10_000, now_ms),
-  ) != Error(WrongChannel)
+  ) != Rejected(WrongChannel)
 }
 
 // ------------------------------------------------------- malformed input
@@ -745,7 +739,7 @@ test rejects_a_negative_max_age() {
     pyth_guard.new(ada_usd, -1, 50),
     fresh_update(now_ms - 1_000),
     window(now_ms - 10_000, now_ms),
-  ) == Error(MalformedGuard)
+  ) == Rejected(MalformedGuard)
 }
 
 test rejects_a_negative_confidence_bound() {
@@ -753,84 +747,80 @@ test rejects_a_negative_confidence_bound() {
     pyth_guard.new(ada_usd, max_age, -1),
     fresh_update(now_ms - 1_000),
     window(now_ms - 10_000, now_ms),
-  ) == Error(MalformedGuard)
+  ) == Rejected(MalformedGuard)
 }
 
 test rejects_an_absent_price() {
-  let bare =
-    feed_full(
-      ada_usd,
-      None,
-      Some(-8),
-      Some(Some(0)),
-      None,
-      Some(now_ms - 1_000),
-      None,
-    )
+  let bare = feed_full(
+    ada_usd,
+    None,
+    Some(-8),
+    Some(Some(0)),
+    None,
+    Some(now_ms - 1_000),
+    None,
+  )
   pyth_guard.check(
     pyth_guard.new_without_confidence_bound(ada_usd, max_age),
     update(now_ms - 1_000, [bare]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(PriceUnavailable)
+  ) == Rejected(PriceUnavailable)
 }
 
 /// A zero price is encoded as an absent inner value, exactly like a zero
 /// confidence — but unlike confidence, a zero price is unusable.
 test rejects_a_zero_price() {
-  let zeroed =
-    feed_full(
-      ada_usd,
-      Some(None),
-      Some(-8),
-      Some(Some(0)),
-      None,
-      Some(now_ms - 1_000),
-      None,
-    )
+  let zeroed = feed_full(
+    ada_usd,
+    Some(None),
+    Some(-8),
+    Some(Some(0)),
+    None,
+    Some(now_ms - 1_000),
+    None,
+  )
   pyth_guard.check(
     pyth_guard.new_without_confidence_bound(ada_usd, max_age),
     update(now_ms - 1_000, [zeroed]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(PriceUnavailable)
+  ) == Rejected(PriceUnavailable)
 }
 
 /// Narrower than the wire domain, which is a signed non-zero i64.
 /// Negative-quoting feeds are out of scope, and the confidence comparison
 /// depends on this sign.
 test rejects_a_negative_price() {
-  let negative =
-    feed_full(
-      ada_usd,
-      Some(Some(-1)),
-      Some(-8),
-      Some(Some(0)),
-      None,
-      Some(now_ms - 1_000),
-      None,
-    )
+  let negative = feed_full(
+    ada_usd,
+    Some(Some(-1)),
+    Some(-8),
+    Some(Some(0)),
+    None,
+    Some(now_ms - 1_000),
+    None,
+  )
   pyth_guard.check(
     pyth_guard.new_without_confidence_bound(ada_usd, max_age),
     update(now_ms - 1_000, [negative]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(NonPositivePrice)
+  ) == Rejected(NonPositivePrice)
 }
 
 test rejects_an_absent_exponent() {
-  let bare =
-    feed_full(
-      ada_usd,
-      Some(Some(42_000_000)),
-      None,
-      Some(Some(0)),
-      None,
-      Some(now_ms - 1_000),
-      None,
-    )
+  let bare = feed_full(
+    ada_usd,
+    Some(Some(42_000_000)),
+    None,
+    Some(Some(0)),
+    None,
+    Some(now_ms - 1_000),
+    None,
+  )
   pyth_guard.check(
     pyth_guard.new_without_confidence_bound(ada_usd, max_age),
     update(now_ms - 1_000, [bare]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(ExponentUnavailable)
+  ) == Rejected(ExponentUnavailable)
 }
 
 // ------------------------------------------------------------ replay primitive
@@ -849,8 +839,10 @@ test replay_guard_requires_strict_advancement() {
 
 test replay_guard_ignores_a_moving_delivery_time() {
   // Same price, redelivered a minute later. It is not new.
-  let redelivered =
-    Price { ..sample_price(), delivered_us: now_us + 60_000_000 }
+  let redelivered = Price {
+    ..sample_price(),
+    delivered_us: now_us + 60_000_000,
+  }
   !pyth_guard.newer_than(redelivered, now_us)
 }
 
@@ -910,8 +902,7 @@ test scaling_up_never_reports_zero_for_a_nonzero_price() {
 /// infinity and ceiling toward positive infinity for negatives too, which is
 /// the case Plutus' two division builtins disagree on.
 test rounding_stays_directional_for_a_negative_mantissa() {
-  let underwater =
-    Price { ..sample_price(), value: 100, confidence: 150 }
+  let underwater = Price { ..sample_price(), value: 100, confidence: 150 }
   let floored = pyth_guard.at_confidence_floor(underwater)
   and {
     floored.value == -50,
@@ -965,7 +956,7 @@ test a_malformed_guard_is_reported_first() {
     pyth_guard.new(ada_usd, -1, 50),
     update(now_ms - 3_600_000, [feed_at(17, 1, 0, 1, now_ms - 3_600_000)]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(MalformedGuard)
+  ) == Rejected(MalformedGuard)
 }
 
 /// Feed identity is resolved before the price inside it is judged, so a
@@ -976,5 +967,5 @@ test feed_identity_is_reported_before_staleness() {
     guard(),
     update(now_ms - 1_000, [feed_at(17, 1, 0, 1, now_ms - 3_600_000)]),
     window(now_ms - 10_000, now_ms),
-  ) == Error(FeedMissing)
+  ) == Rejected(FeedMissing)
 }

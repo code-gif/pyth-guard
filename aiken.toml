@@ -1,6 +1,6 @@
 name = "pyth-guard/pyth-guard"
 version = "0.1.0"
-compiler = "v1.1.21"
+compiler = "v1.1.23"
 plutus = "v3"
 license = "Apache-2.0"
 description = "Freshness, confidence and replay guards for Pyth Pro price updates on Cardano"

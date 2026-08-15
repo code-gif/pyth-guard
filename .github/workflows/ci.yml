@@ -17,7 +17,7 @@ jobs:
 
       - uses: aiken-lang/setup-aiken@v1
         with:
-          version: v1.1.21
+          version: v1.1.23
 
       - name: Format check
         run: aiken fmt --check

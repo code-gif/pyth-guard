@@ -22,10 +22,11 @@ First release.
   guard written against the message timestamp accepts an arbitrarily old price
   in a fresh envelope. The property is required, and a feed lacking it is
   refused rather than falling back.
-- **Rejections are typed values.** `check` returns
-  `Result<Price, Rejection>` with one variant per condition, so callers can
-  branch on the reason and tests can assert *which* check fired.
+- **Rejections are typed values.** `check` returns `Outcome` —
+  `Accepted(Price)` or `Rejected(Rejection)`, one variant per condition — so
+  callers can branch on the reason and tests can assert *which* check fired.
   `read` and `validate` wrap it for callers that want the transaction to fail.
+  Aiken's prelude has no `Result`, so `Outcome` is defined by the library.
 - `select` reads one feed out of several updates, permitting multi-protocol
   batching while refusing two updates that disagree about the same feed.
 - Confidence bounds are **mandatory** in `new`; opting out requires the
