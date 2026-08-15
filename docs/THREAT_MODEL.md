@@ -81,6 +81,17 @@ and the session check overlap but are not the same: a market can close moments
 after a genuinely fresh print, and the age check alone would wave that through
 for a full `max_age_ms`.
 
+**Evidential status.** The carry-forward behaviour and the meaning of
+`feedUpdateTimestamp` are taken from Pyth's payload reference, not from
+observation: every message in the test vector this project uses reports the two
+timestamps as equal, so no captured payload here exhibits the divergence. The
+guard's *handling* of it is tested directly; the frequency and duration of
+carry-forward on any particular feed are not known and would need a live
+subscription to characterise. Nothing in the design depends on that frequency —
+measuring generation time is correct whether carry-forward is common or rare —
+but a claim about how exposed a specific protocol is today would need the
+measurement.
+
 ## Residual risks
 
 These are real, they are not bugs, and no amount of checking inside a validator

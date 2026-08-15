@@ -48,6 +48,15 @@ test rejects_a_price_carried_forward_in_a_fresh_envelope() {
 
 One-second-old envelope, six-hour-old price. Refused, and refused *as stale*.
 
+**What is and is not established here.** That Pyth carries prices forward, and
+that `feedUpdateTimestamp` is the generation time, come from Pyth's own payload
+reference. That the guard handles the divergence correctly is verified by the
+test above and by 15 more against a real signed payload. What has *not* been
+observed is the divergence itself on a live feed: in the upstream test vector
+the two timestamps are equal, so the exploit is inferred from documented
+behaviour rather than witnessed. Treat it as a defect worth closing by
+construction — which costs nothing here — rather than as one seen in the wild.
+
 ## On-chain
 
 ```aiken

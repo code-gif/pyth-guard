@@ -106,8 +106,17 @@ window of *W* seconds is `1 − 0.95^W`:
 | 60 000 | ~95% |
 | 120 000 | ~99.8% |
 
-And that is before subtracting the time to fetch the update, build, sign and
-propagate — all of which comes out of the same budget.
+These figures are **computed from protocol parameters, not measured on
+mainnet**. They assume blocks arrive as an independent-per-slot process at the
+nominal `f`, which is the right first approximation and not the whole story:
+real inclusion also depends on mempool depth, propagation, and how contested
+the moment is. Read the table as an order-of-magnitude floor on what
+`max_age_ms` needs to be, not as a service-level prediction — and note that the
+direction of the error is unhelpful, since congestion makes the real numbers
+worse rather than better.
+
+And all of that is before subtracting the time to fetch the update, build, sign
+and propagate — which comes out of the same budget.
 
 **Start at 60 000 ms.** Go lower only with a measured reason and an appetite
 for retries.

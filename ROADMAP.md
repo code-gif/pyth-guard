@@ -101,7 +101,15 @@ specifically what a synthetic transaction cannot reach:
   script hash. A deployment resolves the actual ones.
 - **Ledger acceptance.** Fees, script size, the execution budget as the node
   enforces it, and whether the `max_age_ms` window really does get transactions
-  included at the rate the arithmetic in `docs/INTEGRATION.md` predicts.
+  included at the rate the arithmetic in `docs/INTEGRATION.md` predicts. That
+  table is computed from protocol parameters and has never been checked against
+  a real submission.
+- **Carry-forward, observed.** The defect this library is built around is taken
+  from Pyth's payload reference; no captured payload here shows
+  `feedUpdateTimestamp` diverging from `timestamp_us`. `pythmon` records both
+  columns, so a subscription would settle how often, and for how long, real
+  feeds carry a price forward. This is the cheapest of these to do and the
+  first thing worth doing with a key: it needs no deployment, only a stream.
 
 Requires a Pyth Pro key.
 
